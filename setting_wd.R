@@ -1,0 +1,1 @@
+setwd("~/Desktop/photo_kaggle/")
