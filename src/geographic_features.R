@@ -9,9 +9,11 @@ library(geonames)
 ##----------------------------------------------------------------------------------
 
 ## You'll need to make a geonames account and set the username to get query results...
-# options(geonamesUsername="myusernamehere")
-# options(geonamesUsername = "ffineiskid")
-options(geonamesUsername = "ffineis")
+## I'd make 2 accounts so you can avoid the 30k requests in a day limit.
+# options(geonamesUsername="myusername1")
+# options(geonamesUsername="myusername2")
+
+options(geonamesUsername = "myusername1")
 
 train <- fread("data/training.csv")
 test <- fread("data/test.csv")
@@ -45,7 +47,7 @@ for(i in 38001:N){
     
     if(i == 30000){
         print("i = 30000, changing usernames.")
-        options(geonamesUsername = "ffineis")
+        options(geonamesUsername = "myusername2")
     }
   }
   
@@ -77,9 +79,9 @@ for(i_test in 1:N_test){
     print("Previous 5 countries:")
     print(countries_test[(i_test-5):i_test])
     
-    if((i_test) %% 30000 == 0){
+    if((i_test + N) %% 30000 == 0){
         print("Hit 30000 requests, changing usernames.")
-        options(geonamesUsername = "ffineiskid")
+        options(geonamesUsername = "myusername1")
     }
   }
   
