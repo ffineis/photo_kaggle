@@ -2,129 +2,142 @@
 ## GET PREDICTIONS
 ##----------------------------------------------------------------------------------
 
-source("~/Desktop/photo_kaggle/setting_wd.R") #set wd
+source("~/Desktop/photo_kaggle/setting_wd.R") #set working directory.
 source("./src/dt_preprocessing.R")
-library(data.table); library(xgboost); library(caret); library(pROC)
+library(data.table); library(xgboost); library(caret); library(pROC); library(ROCR); library(ggplot2)
+set.seed(123)
+
+##----------------------------------------------------------------------------------
+## Training data preprocessing, appending/modifying features.
+##----------------------------------------------------------------------------------
+
+assemble_data <- function(train_or_test = "train",
+                          data_file = "./data/training.csv",
+                          name_tfidf_file = "./data/train_name_tfidf.rds",
+                          desc_caption_tfidf_file = "./data/train_desc_caption_tfidf.rds",
+                          country_file = "./data/aggregate_train_countries.RDS"){
+  dt <- fread(data_file)
+  dt <- remove_columns(add_area(dt))
+
+  if(train_or_test == "train"){
+    print("Assembling training data...")
+    y <- as.matrix(as.numeric(dt[["good"]]))
+    dt[, "good":=NULL]
+  } else print("Assembling test data for predictions...")
+
+  name_tfidf <- readRDS(name_tfidf_file); desc_caption_tfidf <- readRDS(desc_caption_tfidf_file)
+  country <- data.frame("country" = readRDS(country_file))
+
+  #If assembling test data, impute the most common country if country name is missing.
+  if(train_or_test == "test"){
+    country$country[which(is.na(country))] <- names(which.max(table(country)))
+    } else{
+    rm_inds <- which(is.na(country))
+  }
+
+  country_one_hot <- model.matrix(~0+country, data = country)
+
+  df_text <- cbind(dt, name_tfidf) #names text data
+  df_text <- cbind(df_text, desc_caption_tfidf) #description/caption text data
+  colnames(df_text) <- make.names(colnames(df_text), unique = T)
+
+  if(train_or_test == "train"){
+    df_text <- df_text[-rm_inds, ]
+    y <- y[-rm_inds]
+    return(list(data = as.matrix(cbind(df_text, country_one_hot)), y = y))
+  } else{
+    return(list(data = as.matrix(cbind(df_text, country_one_hot))))
+  }
+}
+
+train_data <- assemble_data()
+train <- train_data$data; y <- train_data$y
 
 
 ##----------------------------------------------------------------------------------
-## Data preprocessing, appending/modifying features
-##----------------------------------------------------------------------------------
-
-train <- fread("./data/training.csv")
-train_clean <- remove_columns(add_area(train))
-
-y <- as.matrix(as.numeric(train_clean$good)) #previously 'good' column was character
-train_clean$good <- NULL
-
-train_name_tfidf <- readRDS("./data/train_name_tfidf.rds")
-train_desc_caption_tfidf <- readRDS("./data/train_desc_caption_tfidf.rds")
-
-#Note: should turn training_text dt into an dgCMatrix at some point - train <- xgb.DMatrix(data = train$data, label = train$label)
-train_text <- as.data.table(cbind(train_clean, train_name_tfidf)) #names text data
-train_text <- as.data.table(cbind(train_text, train_desc_caption_tfidf)) #description/caption text data
-
-train_text$country <- readRDS("./data/aggregate_train_countries.RDS")
-
-
-##----------------------------------------------------------------------------------
-## Fit, tune XGBoost model
+## For an example, fit one xgboost model with random parameters.
 ##----------------------------------------------------------------------------------
 
 #split data into training/test sets:
-trainIndex <- caret::createDataPartition(y = y,
+trainIndex <- as.vector(caret::createDataPartition(y = y,
                                          p = 0.8,
-                                         list = FALSE)
+                                         list = FALSE))
 #store explicitly the training data
-train <- xgb.DMatrix(data = as.matrix(train_text[trainIndex]), label = y[trainIndex])
+train.DMat <- xgb.DMatrix(data = train[trainIndex, ], label = y[trainIndex])
 
 #store explicitly the validation data
-valid <- xgb.DMatrix(data = as.matrix(train_text[-trainIndex]), label = y[-trainIndex])
+valid.DMat <- xgb.DMatrix(data = train[-trainIndex, ], label = y[-trainIndex])
 
-#hyper-parameters
-max.depth <- 10
-eta <- 0.5 #learning rate: has to do with regularization. 1 ->> no regularization. 0 < eta <= 1.
-nthread <- 4
-nround <- 100 #number of passes over training data. This is the number of trees we're ensembling.
-             # If nrounds too big, could lead to over-fitting. Is tuning this referred to as "early stopping"?
+#hyperparameters
+max.depth <- 8 #How deep each weak learner (small tree) can get. Will control overfitting.
+eta <- 0.5 #eta is the learning rate, which also has to do with regularization. 1 ->> no regularization. 0 < eta <= 1.
+nround <- 150 #The number of passes over training data. This is the number of trees we're ensembling.
 
-#fit boosted model, one way:
-bst <- xgboost(data = as.matrix(train_text[trainIndex]), label = y[trainIndex],
-               max.depth = max.depth,
-               eta = eta, nthread = nthread,
-               nround = nround,
-               objective = "binary:logistic",
-               eval_metric = "logloss")
+#Fit boosted model with our random parameters. Save output that would otherwise print to console.
+f <- file("./data/watchlist_output.txt", open = "wt")
+bst <- xgb.train(data = train.DMat,
+                watchlist = list(train = train.DMat, validation = valid.DMat),
+                max.depth = max.depth,
+                eta = eta, nthread = 4,
+                nround = nround,
+                objective = "binary:logistic",
+                eval_metric = "logloss")
 
-valid_preds <- predict(bst, as.matrix(train_text[-trainIndex])) #class probabilities, not class labels!
+sink()
+bst_output <- read.table("./data/watchlist_output.txt", sep = "\t")
+# which.min(sapply(bst_output[,3], FUN = function(x){as.numeric(substr(x, 14, 21))}))
+
+valid_preds <- predict(bst, valid.DMat) #class probabilities, not class labels!
 theta <- 0.5
 valid_preds_binary <- ifelse(valid_preds >= theta, 1, 0)
-valid_accuracy <- sum(as.numeric(valid_preds_binary == y[-trainIndex]))/length(y[-trainIndex]) #~76% valid accuracy
+valid_accuracy <- sum(as.numeric(valid_preds_binary == y[-trainIndex]))/length(y[-trainIndex]) #~77% valid accuracy
 print(sprintf("Accuracy on validation set: %f", valid_accuracy))
 
 
-#fit boosted model, another way: use watchlist to note where we should do early stopping -
-# Here, we will watch the progression: validation logloss starts increasing due to overfitting, saving
-# the text output to find the nround value corresponding to lowest test log loss.
-nround <- 100
+##----------------------------------------------------------------------------------
+## Tune xgb model with a gridsearch over parameters and cross validation.
+##----------------------------------------------------------------------------------
 
-f <- file("./data/watchlist_output.txt", open = "wt")
-sink(f)
-bst_watchlist <- xgb.train(data = train, 
-                 watchlist = list(train = train, test = valid),
-                 max.depth = max.depth,
-                 eta = eta, nthread = nthread,
-                 objective = "binary:logistic",
-                 eval_metric = "logloss")
-sink()
+#Define hyperparameter grid. This one will call for 8 models.
+#Note, the parameter names in caret are different than in xgb.train.
+xgb_grid <- expand.grid(nrounds = c(100),
+                        eta = c(0.2),
+                        max_depth = c(7, 10),
+                        colsample_bytree = c(0.6, 1),
+                        gamma = c(0.75, 1),
+                        min_child_weight = c(1))
 
-bst_output <- read.table("./data/watchlist_output.txt", sep = "\t")
-nround <- which.min(sapply(bst_output[,3], FUN = function(x){as.numeric(substr(x, 14, 21))}))
+tr_control <- caret::trainControl(method = "cv",
+                          number = 5,
+                          classProbs = TRUE, 
+                          allowParallel = TRUE,
+                          summaryFunction = mnLogLoss, #Use summaryFunction will use ROC (i.e. AUC) to select optimal model. Write custom one.
+                          verboseIter = TRUE) 
 
+xgb_cv1 <- caret::train(x = train,
+                       y = as.factor(ifelse(y==1, "good", "bad")), #target vector should be non-numeric factors
+                       tuneGrid = xgb_grid, #Which hyperparameters we'll test.
+                       trControl = tr_control, #How cross validation will run.
+                       method = "xgbTree",
+                       metric = "logLoss",
+                       maximize = FALSE)
 
-### Variable importance ###
+save(xgb_cv, "./data/crossvalid_xgb_model.RData")
+
+## Variable importance ##
 importance_matrix <- xgb.importance(model = bst)
 print(importance_matrix)
 xgb.plot.importance(importance_matrix)
 
-
-### Cross validation with xgb.cv ###
-#Documentation: https://github.com/dmlc/xgboost/blob/master/doc/parameter.md
-parameters = list("objective" = "binary:logistic", #probability, not logits. Get logits with binary:logitraw.
-                  "eval_metric" = "logloss")
-cv.folds <- 10
-total_train <- as.matrix(train_text)
-
-etas = c(0.01, 0.1, 0.5, 0.75, 1); eta_stor <- list(); bst.cv <- list()
-for(j in 1:length(etas)){
-  bst.cv[[j]] <- xgb.cv(param = parameters,
-                   data = total_train,
-                   label = y,
-                   nfold = cv.folds,
-                   nthread = nthread,
-                   nrounds = nround,
-                   eta = etas[j],
-                   early.stop.round = 5)
-}
-
-#Find a reasonable eta value
-bst.cv.ind <- which.min(unlist(lapply(bst.cv, FUN = function(x){min(x$test.logloss.mean)})))
-eta <- etas[bst.cv.ind]
-
-bst.final <- xgboost(data = total_train,
-                      label = y,
-                      max.depth = max.depth,
-                      eta = eta,
-                      nrounds = nround,
-                      nthread = nthread,
-                      objective = "binary:logistic",
-                      eval_metric = "logloss")
+#Get validation set predictions:
+valid.preds <- xgboost::predict(xgb_cv, train[-trainIndex, ], type = "prob") #Obtain class probabilities.
 
 
 ##----------------------------------------------------------------------------------
 ## Make AUC curve
 ##----------------------------------------------------------------------------------
 
+#ROC curve by hand:
 FPR <- function(true, probs, theta){
   preds <- ifelse(probs >= theta, 1, 0)
   fpr <- (length(which((preds == 1) & (true == 0))))/length(true) #preds indicate positive but true is actually negative
@@ -135,33 +148,72 @@ TPR <- function(true, probs, theta){
   fnr <- length(which((preds == 0) & true == 1))/length(true) #false negatives: preds are negative but true is positive
   return(1-fnr)
 }
+# cutoff_value <- function(fpr, true, probs, tol = 0.0005, max_iter = 10000){
+#   theta_est <- 0.5
+#   fpr_tmp <- FPR(true, probs, theta_est)
+#   err <- fpr_tmp - fpr
+#   step <- 0.0005
+#   iter <- 1
+#   while((abs(err) > tol) & (iter <= max_iter)){
+#     if(iter %% 500 == 0) print(sprintf("Solving for theta. On iteration %d.", iter))
+#     if(sign(err) == 1){ #Too many false positives.
+#       theta_est <- theta_est + step #If fpr_tmp too high, increase threshold.
+#     } else{
+#       theta_est <- theta_est - step
+#     }
+#     fpr_tmp <- FPR(true, probs, theta_est)
+#     err <- fpr_tmp - fpr
+#     iter <- iter+1
+#   }
+#   print(sprintf("Estimated fpr: %.5f", fpr_tmp))
+#   return(theta_est)
+# }
 
 roc <- matrix(NA, nrow = 100, ncol = 2)
 thetas <- seq(0, 1, length.out = 100)
-fitted <- predict(bst.final, total_train)
+
 for(i in 1:length(thetas)){
-  roc[i,] <- c(FPR(true = y, probs = fitted, theta = thetas[i]),
-               TPR(true = y, probs = fitted, theta = thetas[i]))
+  roc[i,] <- c(FPR(true = y[-trainIndex], probs = valid.preds$good, theta = thetas[i]),
+               TPR(true = y[-trainIndex], probs = valid.preds$good, theta = thetas[i]))
 }
 
 plot(roc[,1], roc[,2], type = "l", lwd = 2, col = 'blue', main = "AUC", ylab = "TPR", xlab = "FPR", xlim = c(0,1), ylim = c(0,1))
 abline(a = 0, b = 1, col = 'black', lwd = 2)
 
-pROC::auc(y, fitted) #0.932, not bad...
+# Using the pROC and ROCR packages, obtain AUC statistic and plot ROC curve:
+# Note, this is adapted from a Yhat blog post: http://blog.yhat.com/posts/roc-curves.html
+auc_est <- pROC::auc(y[-trainIndex], valid.preds$good) #0.8638 on the validation set, not bad...
+
+rocr_pred <- prediction(valid.preds$good, y[-trainIndex])
+rocr_perf <- performance(rocr_pred, measure = "tpr", x.measure = "fpr") #this is of class "performance," it's not a list
+auc_data <- data.frame("fpr" = unlist(rocr_perf@x.values), "tpr" = unlist(rocr_perf@y.values))
+
+#Get theta-cutoff value for test data to classify good/bad albums based on class probabilities.
+# cutoff_index <- which.min(apply(auc_data, 1, FUN = function(x){norm(as.vector(c(0,1))-as.vector(x), "2")}))
+# theta <- cutoff_value(auc_data$fpr[cutoff_index], y[-trainIndex], valid.preds$good)
+
+auc_roc_curve <- ggplot(data = auc_data, aes(x = fpr, y = tpr, ymin = 0, ymax = tpr)) +
+  geom_line(aes(y = tpr), alpha = 0.8, color = 'blue') + #draw ROC curve
+  geom_ribbon(alpha = 0.2) + #shade under blue curve
+  ggtitle(sprintf("ROC Curve illustrating AUC = %.4f", auc_est))
+
+auc_roc_curve
 
 
 ##-------------------------------------------------------------------------------------------
 ## Process test data, get predictions
 ##-------------------------------------------------------------------------------------------
 
-test <- fread("./data/test.csv")
-test_clean <- remove_columns(add_area(test))
+test_data <- assemble_data(train_or_test = "test",
+                          data_file = "./data/test.csv",
+                          name_tfidf_file = "./data/test_name_tfidf.rds",
+                          desc_caption_tfidf_file = "./data/test_desc_caption_tfidf.rds",
+                          country_file = "./data/aggregate_test_countries.RDS")
 
-test_name_tfidf <- readRDS("./data/test_name_tfidf.rds")
-test_desc_caption_tfidf <- readRDS("./data/test_desc_caption_tfidf.rds")
+test <- test_data$data
+test_classes <- ifelse(predict(xgb_cv, test, type = "raw") == "good", 1, 0)
 
-test_text <- as.data.table(cbind(test_clean, test_name_tfidf)) #names text data
-train_text <- as.data.table(cbind(train_text, test_desc_caption_tfidf)) #description/caption text data
-
-test_text$country <- readRDS("./data/aggregate_test_countries.RDS")
+#Save and then submit predictions!
+write.csv(data.frame(id = read.csv("./data/test.csv")$id, good = test_classes),
+          "./data/test_predictions.csv", row.names = FALSE)
 
