@@ -134,7 +134,7 @@ valid.preds <- xgboost::predict(xgb_cv, train[-trainIndex, ], type = "prob") #Ob
 
 
 ##----------------------------------------------------------------------------------
-## Make AUC curve
+## Make ROC curve, get AUC statistic.
 ##----------------------------------------------------------------------------------
 
 #ROC curve by hand:
