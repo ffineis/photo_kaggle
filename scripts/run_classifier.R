@@ -74,7 +74,7 @@ eta <- 0.5 #eta is the learning rate, which also has to do with regularization. 
 nround <- 150 #The number of passes over training data. This is the number of trees we're ensembling.
 
 #Fit boosted model with our random parameters. Save output that would otherwise print to console.
-f <- file("./data/watchlist_output.txt", open = "wt")
+sink("./data/watchlist_output.txt", append = FALSE)
 bst <- xgb.train(data = train.DMat,
                 watchlist = list(train = train.DMat, validation = valid.DMat),
                 max.depth = max.depth,
@@ -82,16 +82,17 @@ bst <- xgb.train(data = train.DMat,
                 nround = nround,
                 objective = "binary:logistic",
                 eval_metric = "logloss")
-
 sink()
+
+#View training/validation logloss metrics:
 bst_output <- read.table("./data/watchlist_output.txt", sep = "\t")
 # which.min(sapply(bst_output[,3], FUN = function(x){as.numeric(substr(x, 14, 21))}))
 
-valid_preds <- predict(bst, valid.DMat) #class probabilities, not class labels!
+valid.preds <- predict(bst, valid.DMat) #Xgboost::predict returns class probabilities, not class labels!
 theta <- 0.5
-valid_preds_binary <- ifelse(valid_preds >= theta, 1, 0)
-valid_accuracy <- sum(as.numeric(valid_preds_binary == y[-trainIndex]))/length(y[-trainIndex]) #~77% valid accuracy
-print(sprintf("Accuracy on validation set: %f", valid_accuracy))
+valid.class_preds <- ifelse(valid.preds >= theta, 1, 0)
+valid.accuracy <- sum(as.numeric(valid.class_preds == y[-trainIndex]))/length(y[-trainIndex]) #~78% valid accuracy
+print(sprintf("Accuracy on validation set: %f", valid.accuracy))
 
 
 ##----------------------------------------------------------------------------------
@@ -122,15 +123,16 @@ xgb_cv1 <- caret::train(x = train,
                        metric = "logLoss",
                        maximize = FALSE)
 
-save(xgb_cv, "./data/crossvalid_xgb_model.RData")
+save(xgb_cv1, file = "./data/model.RData")
 
-## Variable importance ##
+## Variable importance:
 importance_matrix <- xgb.importance(model = bst)
 print(importance_matrix)
-xgb.plot.importance(importance_matrix)
+barplot(importance_matrix$Gain[10:1], horiz = T, names.arg = importance_matrix$Feature[10:1],
+        main = "Estimated top 10 features by predictive power gain")
 
-#Get validation set predictions:
-valid.preds <- xgboost::predict(xgb_cv, train[-trainIndex, ], type = "prob") #Obtain class probabilities.
+## Get validation set predictions:
+valid.preds <- xgboost::predict(xgb_cv1, train[-trainIndex, ], type = "prob") #Obtain class probabilities.
 
 
 ##----------------------------------------------------------------------------------
@@ -211,7 +213,7 @@ test_data <- assemble_data(train_or_test = "test",
                           country_file = "./data/aggregate_test_countries.RDS")
 
 test <- test_data$data
-test_classes <- ifelse(predict(xgb_cv, test, type = "raw") == "good", 1, 0)
+test_classes <- ifelse(predict(xgb_cv1, test, type = "raw") == "good", 1, 0)
 
 #Save and then submit predictions!
 write.csv(data.frame(id = read.csv("./data/test.csv")$id, good = test_classes),
