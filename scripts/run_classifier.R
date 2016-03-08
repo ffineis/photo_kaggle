@@ -94,6 +94,15 @@ valid.class_preds <- ifelse(valid.preds >= theta, 1, 0)
 valid.accuracy <- sum(as.numeric(valid.class_preds == y[-trainIndex]))/length(y[-trainIndex]) #~78% valid accuracy
 print(sprintf("Accuracy on validation set: %f", valid.accuracy))
 
+## Variable importance:
+importance_matrix <- xgb.importance(model = bst, feature_names = colnames(train))
+print(importance_matrix)
+barplot(importance_matrix$Gain[6:1],
+        horiz = T,
+        names.arg = importance_matrix$Feature[6:1],
+        main = "Estimated top 6 features by accuracy gain",
+        cex.names = .6)
+
 
 ##----------------------------------------------------------------------------------
 ## Tune xgb model with a gridsearch over parameters and cross validation.
@@ -123,13 +132,7 @@ xgb_cv1 <- caret::train(x = train,
                        metric = "logLoss",
                        maximize = FALSE)
 
-save(xgb_cv1, file = "./data/model.RData")
-
-## Variable importance:
-importance_matrix <- xgb.importance(model = bst)
-print(importance_matrix)
-barplot(importance_matrix$Gain[10:1], horiz = T, names.arg = importance_matrix$Feature[10:1],
-        main = "Estimated top 10 features by predictive power gain")
+save(xgb_cv1, file = "./output/model.RData")
 
 ## Get validation set predictions:
 valid.preds <- xgboost::predict(xgb_cv1, train[-trainIndex, ], type = "prob") #Obtain class probabilities.
@@ -217,5 +220,5 @@ test_classes <- ifelse(predict(xgb_cv1, test, type = "raw") == "good", 1, 0)
 
 #Save and then submit predictions!
 write.csv(data.frame(id = read.csv("./data/test.csv")$id, good = test_classes),
-          "./data/test_predictions.csv", row.names = FALSE)
+          "./output/test_predictions.csv", row.names = FALSE)
 
