@@ -74,7 +74,7 @@ eta <- 0.5 #eta is the learning rate, which also has to do with regularization. 
 nround <- 150 #The number of passes over training data. This is the number of trees we're ensembling.
 
 #Fit boosted model with our random parameters. Save output that would otherwise print to console.
-sink("./data/watchlist_output.txt", append = FALSE)
+sink("./output/watchlist_output.txt", append = FALSE)
 bst <- xgb.train(data = train.DMat,
                 watchlist = list(train = train.DMat, validation = valid.DMat),
                 max.depth = max.depth,
@@ -85,7 +85,7 @@ bst <- xgb.train(data = train.DMat,
 sink()
 
 #View training/validation logloss metrics:
-bst_output <- read.table("./data/watchlist_output.txt", sep = "\t")
+bst_output <- read.table("./output/watchlist_output.txt", sep = "\t")
 # which.min(sapply(bst_output[,3], FUN = function(x){as.numeric(substr(x, 14, 21))}))
 
 valid.preds <- predict(bst, valid.DMat) #Xgboost::predict returns class probabilities, not class labels!
@@ -187,9 +187,9 @@ abline(a = 0, b = 1, col = 'black', lwd = 2)
 
 # Using the pROC and ROCR packages, obtain AUC statistic and plot ROC curve:
 # Note, this is adapted from a Yhat blog post: http://blog.yhat.com/posts/roc-curves.html
-auc_est <- pROC::auc(y[-trainIndex], valid.preds$good) #0.8638 on the validation set, not bad...
+auc_est <- pROC::auc(y[-trainIndex], valid.preds) #0.8638 on the validation set, not bad...
 
-rocr_pred <- prediction(valid.preds$good, y[-trainIndex])
+rocr_pred <- prediction(valid.preds, y[-trainIndex])
 rocr_perf <- performance(rocr_pred, measure = "tpr", x.measure = "fpr") #this is of class "performance," it's not a list
 auc_data <- data.frame("fpr" = unlist(rocr_perf@x.values), "tpr" = unlist(rocr_perf@y.values))
 
@@ -203,6 +203,7 @@ auc_roc_curve <- ggplot(data = auc_data, aes(x = fpr, y = tpr, ymin = 0, ymax = 
   ggtitle(sprintf("ROC Curve illustrating AUC = %.4f", auc_est))
 
 auc_roc_curve
+ggsave(auc_roc_curve, "./output/roc_curve.png")
 
 
 ##-------------------------------------------------------------------------------------------
