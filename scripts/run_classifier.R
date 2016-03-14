@@ -4,7 +4,7 @@
 
 source("~/Desktop/photo_kaggle/setting_wd.R") #set working directory.
 source("./src/dt_preprocessing.R")
-library(data.table); library(xgboost); library(caret); library(pROC); library(ROCR); library(ggplot2)
+library(data.table); library(xgboost); library(caret); library(pROC); library(ROCR); library(ggplot2); library(doParallel)
 set.seed(123)
 
 ##----------------------------------------------------------------------------------
@@ -117,6 +117,9 @@ xgb_grid <- expand.grid(nrounds = c(100),
                         gamma = c(0.75, 1),
                         min_child_weight = c(1))
 
+#Make a cluster of 3 cores available to trian model:
+registerDoParallel(3)
+
 tr_control <- caret::trainControl(method = "cv",
                           number = 5,
                           classProbs = TRUE, 
@@ -203,7 +206,7 @@ auc_roc_curve <- ggplot(data = auc_data, aes(x = fpr, y = tpr, ymin = 0, ymax = 
   ggtitle(sprintf("ROC Curve illustrating AUC = %.4f", auc_est))
 
 auc_roc_curve
-ggsave(auc_roc_curve, "./output/roc_curve.png")
+ggsave("./output/roc_curve.png", auc_roc_curve)
 
 
 ##-------------------------------------------------------------------------------------------
